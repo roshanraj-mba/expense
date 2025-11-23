@@ -92,13 +92,26 @@ const ExpenseList = ({ expenses, currentUserId }) => {
                                     <div className="d-flex align-items-center gap-2 text-white-50" style={{ fontSize: '0.7rem' }}>
                                         <span className="d-flex align-items-center gap-1">
                                             <User size={12} />
-                                            {expense.userName}
+                                            {expense.paidByName || expense.userName}
                                         </span>
                                         <span>•</span>
                                         <span className="d-flex align-items-center gap-1">
                                             <Calendar size={12} />
-                                            {expense.date?.seconds ? format(new Date(expense.date.seconds * 1000), 'MMM d') : 'Today'}
+                                            {expense.createdAt?.seconds ? format(new Date(expense.createdAt.seconds * 1000), 'MMM d') : 'Today'}
                                         </span>
+                                        {expense.splitType && (
+                                            <>
+                                                <span>•</span>
+                                                <span className="badge" style={{
+                                                    background: 'rgba(6, 182, 212, 0.1)',
+                                                    color: 'var(--color-accent)',
+                                                    fontSize: '0.65rem',
+                                                    padding: '0.1rem 0.4rem'
+                                                }}>
+                                                    {expense.splitType === 'equal' ? '⚖️ Equal' : expense.splitType === 'percentage' ? '📊 %' : '💰 Custom'}
+                                                </span>
+                                            </>
+                                        )}
                                     </div>
                                 </div>
                             </div>

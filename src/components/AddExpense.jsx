@@ -1,240 +1,408 @@
-import React, { useState } from 'react';
-import { addExpense } from '../firebaseService';
-import { X, DollarSign, FileText, Loader2 } from 'lucide-react';
+import React, { useState, useEffect } from 'react';
+import { X, Wallet, Home, Droplets, Zap, Utensils, Users, Percent, DollarSign } from 'lucide-react';
+import { addExpense, calculateEqualSplit, calculatePercentageSplit, calculateCustomSplit } from '../firebaseService';
 
 const CATEGORIES = [
-    { id: 'rent', label: 'Rent', color: '#a78bfa' },
-    { id: 'food', label: 'Food', color: '#34d399' },
-    { id: 'water', label: 'Water', color: '#60a5fa' },
-    { id: 'electricity', label: 'Electricity', color: '#fbbf24' },
-    { id: 'other', label: 'Other', color: '#94a3b8' }
+    { id: 'rent', label: 'Rent', icon: Home, color: '#a78bfa' },
+    { id: 'food', label: 'Food', icon: Utensils, color: '#34d399' },
+    { id: 'water', label: 'Water', icon: Droplets, color: '#60a5fa' },
+    { id: 'electricity', label: 'Electricity', icon: Zap, color: '#fbbf24' },
+    { id: 'other', label: 'Other', icon: Wallet, color: '#94a3b8' }
 ];
 
-const AddExpense = ({ isOpen, onClose, user, currentMonth }) => {
-    const [amount, setAmount] = useState('');
-    const [description, setDescription] = useState('');
-    const [category, setCategory] = useState('food');
-    const [loading, setLoading] = useState(false);
+const SPLIT_TYPES = [
+    { id: 'equal', label: 'Equal Split', icon: Users, description: 'Split equally among members' },
+    { id: 'percentage', label: 'Percentage', icon: Percent, description: 'Custom percentage for each member' },
+    { id: 'custom', label: 'Custom Amount', icon: DollarSign, description: 'Exact amount for each member' }
+];
 
-    if (!isOpen) return null;
+const AddExpense = ({ isOpen, onClose, user, currentMonth, group }) => {
+    const [formData, setFormData] = useState({
+        description: '',
+        amount: '',
+        category: 'food'
+    });
+    const [splitType, setSplitType] = useState('equal');
+    const [selectedMembers, setSelectedMembers] = useState([]);
+    const [percentages, setPercentages] = useState({});
+    const [customAmounts, setCustomAmounts] = useState({});
+    const [loading, setLoading] = useState(false);
+    const [error, setError] = useState('');
+
+    const members = group?.members || {};
+    const memberIds = Object.keys(members);
+
+    useEffect(() => {
+        if (isOpen && memberIds.length > 0) {
+            // Select all members by default
+            setSelectedMembers(memberIds);
+
+            // Initialize percentages (equal split)
+            const equalPercentage = 100 / memberIds.length;
+            const initialPercentages = {};
+            memberIds.forEach(id => {
+                initialPercentages[id] = equalPercentage;
+            });
+            setPercentages(initialPercentages);
+
+            // Initialize custom amounts
+            const initialAmounts = {};
+            memberIds.forEach(id => {
+                initialAmounts[id] = 0;
+            });
+            setCustomAmounts(initialAmounts);
+        }
+    }, [isOpen, group]);
+
+    const handleMemberToggle = (memberId) => {
+        setSelectedMembers(prev => {
+            if (prev.includes(memberId)) {
+                return prev.filter(id => id !== memberId);
+            } else {
+                return [...prev, memberId];
+            }
+        });
+    };
+
+    const handlePercentageChange = (memberId, value) => {
+        setPercentages(prev => ({
+            ...prev,
+            [memberId]: parseFloat(value) || 0
+        }));
+    };
+
+    const handleCustomAmountChange = (memberId, value) => {
+        setCustomAmounts(prev => ({
+            ...prev,
+            [memberId]: parseFloat(value) || 0
+        }));
+    };
+
+    const getTotalPercentage = () => {
+        return selectedMembers.reduce((sum, id) => sum + (percentages[id] || 0), 0);
+    };
+
+    const getTotalCustomAmount = () => {
+        return selectedMembers.reduce((sum, id) => sum + (customAmounts[id] || 0), 0);
+    };
+
+    const validateSplit = () => {
+        if (selectedMembers.length === 0) {
+            return 'Please select at least one member';
+        }
+
+        if (splitType === 'percentage') {
+            const total = getTotalPercentage();
+            if (Math.abs(total - 100) > 0.01) {
+                return `Percentages must total 100% (currently ${total.toFixed(1)}%)`;
+            }
+        }
+
+        if (splitType === 'custom') {
+            const total = getTotalCustomAmount();
+            const amount = parseFloat(formData.amount);
+            if (Math.abs(total - amount) > 0.01) {
+                return `Custom amounts must total ₹${amount} (currently ₹${total.toFixed(2)})`;
+            }
+        }
+
+        return null;
+    };
 
     const handleSubmit = async (e) => {
         e.preventDefault();
+
+        const validationError = validateSplit();
+        if (validationError) {
+            setError(validationError);
+            return;
+        }
+
+        if (!formData.description.trim() || !formData.amount) {
+            setError('Please fill in all required fields');
+            return;
+        }
+
         setLoading(true);
+        setError('');
 
         try {
+            const amount = parseFloat(formData.amount);
+            let splits;
+
+            if (splitType === 'equal') {
+                splits = calculateEqualSplit(amount, selectedMembers);
+            } else if (splitType === 'percentage') {
+                const selectedPercentages = {};
+                selectedMembers.forEach(id => {
+                    selectedPercentages[id] = percentages[id];
+                });
+                splits = calculatePercentageSplit(amount, selectedPercentages);
+            } else {
+                const selectedAmounts = {};
+                selectedMembers.forEach(id => {
+                    selectedAmounts[id] = customAmounts[id];
+                });
+                splits = calculateCustomSplit(selectedAmounts);
+            }
+
             await addExpense({
-                userId: user.uid,
-                userName: user.displayName || user.email.split('@')[0],
-                amount: parseFloat(amount),
-                description,
-                category,
-                month: currentMonth,
-                date: new Date()
+                groupId: group.id,
+                description: formData.description,
+                amount: amount,
+                category: formData.category,
+                paidBy: user.uid,
+                paidByName: user.displayName || 'User',
+                splits: splits,
+                splitType: splitType,
+                month: currentMonth
             });
+
+            // Reset form
+            setFormData({ description: '', amount: '', category: 'food' });
+            setSplitType('equal');
+            setError('');
             onClose();
-            setAmount('');
-            setDescription('');
-            setCategory('food');
-        } catch (error) {
-            console.error("Failed to add expense", error);
+        } catch (err) {
+            console.error('Error adding expense:', err);
+            setError('Failed to add expense. Please try again.');
         } finally {
             setLoading(false);
         }
     };
 
+    if (!isOpen) return null;
+
     return (
-        <div
-            className="position-fixed top-0 start-0 w-100 h-100 d-flex align-items-center justify-content-center p-3"
-            style={{
-                zIndex: 1050,
-                background: 'rgba(0, 0, 0, 0.6)',
-                backdropFilter: 'blur(8px)'
-            }}
-            onClick={onClose}
-        >
-            <div
-                className="card border-0 position-relative"
-                style={{
-                    maxWidth: '420px',
-                    width: '100%',
-                    background: 'rgba(15, 23, 42, 0.95)',
-                    backdropFilter: 'blur(20px)',
-                    borderRadius: '16px',
-                    boxShadow: '0 20px 60px rgba(0, 0, 0, 0.5)'
-                }}
-                onClick={(e) => e.stopPropagation()}
-            >
-                {/* Close Button */}
-                <button
-                    onClick={onClose}
-                    className="btn-close btn-close-white position-absolute"
-                    style={{ top: '12px', right: '12px', opacity: 0.6 }}
-                    onMouseEnter={(e) => e.target.style.opacity = 1}
-                    onMouseLeave={(e) => e.target.style.opacity = 0.6}
-                ></button>
+        <div className="modal-overlay" onClick={onClose}>
+            <div className="modal-content" onClick={(e) => e.stopPropagation()} style={{ maxWidth: '600px' }}>
+                <div className="modal-header">
+                    <h3 className="text-gradient">Add Expense</h3>
+                    <button
+                        onClick={onClose}
+                        className="btn-secondary"
+                        style={{ padding: '0.5rem', borderRadius: '50%' }}
+                    >
+                        <X size={20} />
+                    </button>
+                </div>
 
-                <div className="card-body p-3">
-                    {/* Header */}
-                    <div className="d-flex align-items-center gap-2 mb-3">
-                        <div className="rounded-2 p-2" style={{
-                            background: 'rgba(139, 92, 246, 0.2)',
-                            color: '#8b5cf6'
-                        }}>
-                            <DollarSign size={20} />
-                        </div>
-                        <h5 className="mb-0 fw-bold text-white">Add Expense</h5>
-                    </div>
-
-                    <form onSubmit={handleSubmit}>
-                        {/* Amount Field */}
-                        <div className="mb-3">
-                            <label className="form-label text-white-50 small mb-1">Amount (₹)</label>
-                            <div className="input-group">
-                                <span className="input-group-text border-0" style={{
-                                    background: 'rgba(30, 41, 59, 0.5)',
-                                    color: '#94a3b8'
-                                }}>
-                                    ₹
-                                </span>
-                                <input
-                                    type="number"
-                                    placeholder="0.00"
-                                    className="form-control border-0 text-white fw-semibold"
-                                    value={amount}
-                                    onChange={(e) => setAmount(e.target.value)}
-                                    required
-                                    min="0"
-                                    step="0.01"
-                                    autoFocus
-                                    style={{
-                                        background: 'rgba(30, 41, 59, 0.5)',
-                                        fontSize: '1.1rem'
-                                    }}
-                                    onFocus={(e) => {
-                                        e.target.style.boxShadow = '0 0 0 0.2rem rgba(139, 92, 246, 0.25)';
-                                    }}
-                                    onBlur={(e) => {
-                                        e.target.style.boxShadow = 'none';
-                                    }}
-                                />
+                <form onSubmit={handleSubmit}>
+                    <div className="modal-body">
+                        {error && (
+                            <div style={{
+                                padding: '0.75rem',
+                                background: 'rgba(239, 68, 68, 0.1)',
+                                border: '1px solid rgba(239, 68, 68, 0.3)',
+                                borderRadius: 'var(--radius-md)',
+                                color: 'var(--color-danger)',
+                                marginBottom: 'var(--spacing-md)',
+                                fontSize: '0.875rem'
+                            }}>
+                                {error}
                             </div>
+                        )}
+
+                        {/* Description */}
+                        <div className="form-group">
+                            <label className="form-label">Description *</label>
+                            <input
+                                type="text"
+                                className="input"
+                                placeholder="e.g., Electricity Bill"
+                                value={formData.description}
+                                onChange={(e) => setFormData({ ...formData, description: e.target.value })}
+                                required
+                            />
                         </div>
 
-                        {/* Category Selection */}
-                        <div className="mb-3">
-                            <label className="form-label text-white-50 small mb-1">Category</label>
-                            <div className="row g-2">
-                                {CATEGORIES.map(cat => (
-                                    <div key={cat.id} className="col-6">
+                        {/* Amount */}
+                        <div className="form-group">
+                            <label className="form-label">Amount (₹) *</label>
+                            <input
+                                type="number"
+                                className="input"
+                                placeholder="0.00"
+                                step="0.01"
+                                min="0"
+                                value={formData.amount}
+                                onChange={(e) => setFormData({ ...formData, amount: e.target.value })}
+                                required
+                            />
+                        </div>
+
+                        {/* Category */}
+                        <div className="form-group">
+                            <label className="form-label">Category</label>
+                            <div style={{ display: 'grid', gridTemplateColumns: 'repeat(auto-fit, minmax(100px, 1fr))', gap: '0.5rem' }}>
+                                {CATEGORIES.map(cat => {
+                                    const Icon = cat.icon;
+                                    return (
                                         <button
+                                            key={cat.id}
                                             type="button"
-                                            onClick={() => setCategory(cat.id)}
-                                            className="btn w-100 text-start d-flex align-items-center gap-2"
+                                            onClick={() => setFormData({ ...formData, category: cat.id })}
                                             style={{
-                                                background: category === cat.id
-                                                    ? 'rgba(139, 92, 246, 0.2)'
-                                                    : 'rgba(30, 41, 59, 0.5)',
-                                                border: category === cat.id
-                                                    ? '1px solid #8b5cf6'
-                                                    : '1px solid rgba(255, 255, 255, 0.1)',
-                                                color: category === cat.id ? '#ffffff' : '#94a3b8',
-                                                padding: '0.5rem',
-                                                fontSize: '0.85rem',
-                                                transition: 'all 0.2s'
-                                            }}
-                                            onMouseEnter={(e) => {
-                                                if (category !== cat.id) {
-                                                    e.target.style.background = 'rgba(30, 41, 59, 0.8)';
-                                                }
-                                            }}
-                                            onMouseLeave={(e) => {
-                                                if (category !== cat.id) {
-                                                    e.target.style.background = 'rgba(30, 41, 59, 0.5)';
-                                                }
+                                                padding: '0.75rem',
+                                                background: formData.category === cat.id ? 'rgba(139, 92, 246, 0.2)' : 'rgba(255, 255, 255, 0.05)',
+                                                border: formData.category === cat.id ? '2px solid var(--color-primary)' : '1px solid var(--color-border)',
+                                                borderRadius: 'var(--radius-md)',
+                                                cursor: 'pointer',
+                                                transition: 'all 0.2s',
+                                                display: 'flex',
+                                                flexDirection: 'column',
+                                                alignItems: 'center',
+                                                gap: '0.25rem'
                                             }}
                                         >
-                                            <div
-                                                className="rounded-circle"
-                                                style={{
-                                                    width: '8px',
-                                                    height: '8px',
-                                                    background: cat.color
-                                                }}
-                                            ></div>
-                                            <span>{cat.label}</span>
+                                            <Icon size={20} style={{ color: cat.color }} />
+                                            <span style={{ fontSize: '0.75rem', color: 'var(--color-text)' }}>{cat.label}</span>
                                         </button>
-                                    </div>
-                                ))}
+                                    );
+                                })}
                             </div>
                         </div>
 
-                        {/* Description Field */}
-                        <div className="mb-3">
-                            <label className="form-label text-white-50 small mb-1">Description</label>
-                            <div className="input-group">
-                                <span className="input-group-text border-0" style={{
-                                    background: 'rgba(30, 41, 59, 0.5)',
-                                    color: '#94a3b8'
+                        {/* Split Type */}
+                        <div className="form-group">
+                            <label className="form-label">Split Type</label>
+                            <div className="tabs">
+                                {SPLIT_TYPES.map(type => {
+                                    const Icon = type.icon;
+                                    return (
+                                        <button
+                                            key={type.id}
+                                            type="button"
+                                            className={`tab ${splitType === type.id ? 'active' : ''}`}
+                                            onClick={() => setSplitType(type.id)}
+                                        >
+                                            <Icon size={16} />
+                                            {type.label}
+                                        </button>
+                                    );
+                                })}
+                            </div>
+                        </div>
+
+                        {/* Members Selection */}
+                        <div className="form-group">
+                            <label className="form-label">Split Between</label>
+                            <div style={{ display: 'flex', flexDirection: 'column', gap: '0.5rem' }}>
+                                {memberIds.map(memberId => {
+                                    const member = members[memberId];
+                                    const isSelected = selectedMembers.includes(memberId);
+
+                                    return (
+                                        <div
+                                            key={memberId}
+                                            style={{
+                                                padding: '0.75rem',
+                                                background: isSelected ? 'rgba(139, 92, 246, 0.1)' : 'rgba(255, 255, 255, 0.05)',
+                                                border: isSelected ? '1px solid var(--color-primary)' : '1px solid var(--color-border)',
+                                                borderRadius: 'var(--radius-md)',
+                                                display: 'flex',
+                                                alignItems: 'center',
+                                                gap: '0.75rem'
+                                            }}
+                                        >
+                                            <input
+                                                type="checkbox"
+                                                checked={isSelected}
+                                                onChange={() => handleMemberToggle(memberId)}
+                                                style={{ cursor: 'pointer' }}
+                                            />
+                                            <div style={{ flex: 1 }}>
+                                                <div style={{ fontWeight: 500 }}>{member.name}</div>
+                                            </div>
+
+                                            {isSelected && splitType === 'percentage' && (
+                                                <div style={{ display: 'flex', alignItems: 'center', gap: '0.5rem', minWidth: '120px' }}>
+                                                    <input
+                                                        type="number"
+                                                        className="input"
+                                                        value={percentages[memberId] || 0}
+                                                        onChange={(e) => handlePercentageChange(memberId, e.target.value)}
+                                                        step="0.1"
+                                                        min="0"
+                                                        max="100"
+                                                        style={{ padding: '0.5rem', fontSize: '0.875rem' }}
+                                                    />
+                                                    <span style={{ fontSize: '0.875rem' }}>%</span>
+                                                </div>
+                                            )}
+
+                                            {isSelected && splitType === 'custom' && (
+                                                <div style={{ display: 'flex', alignItems: 'center', gap: '0.5rem', minWidth: '120px' }}>
+                                                    <span style={{ fontSize: '0.875rem' }}>₹</span>
+                                                    <input
+                                                        type="number"
+                                                        className="input"
+                                                        value={customAmounts[memberId] || 0}
+                                                        onChange={(e) => handleCustomAmountChange(memberId, e.target.value)}
+                                                        step="0.01"
+                                                        min="0"
+                                                        style={{ padding: '0.5rem', fontSize: '0.875rem' }}
+                                                    />
+                                                </div>
+                                            )}
+
+                                            {isSelected && splitType === 'equal' && formData.amount && (
+                                                <div style={{ fontSize: '0.875rem', color: 'var(--color-primary)', fontWeight: 600 }}>
+                                                    ₹{(parseFloat(formData.amount) / selectedMembers.length).toFixed(2)}
+                                                </div>
+                                            )}
+                                        </div>
+                                    );
+                                })}
+                            </div>
+
+                            {/* Split Summary */}
+                            {selectedMembers.length > 0 && (
+                                <div style={{
+                                    marginTop: '0.5rem',
+                                    padding: '0.75rem',
+                                    background: 'rgba(6, 182, 212, 0.1)',
+                                    borderRadius: 'var(--radius-md)',
+                                    fontSize: '0.875rem'
                                 }}>
-                                    <FileText size={18} />
-                                </span>
-                                <input
-                                    type="text"
-                                    placeholder="What is this for?"
-                                    className="form-control border-0 text-white"
-                                    value={description}
-                                    onChange={(e) => setDescription(e.target.value)}
-                                    required
-                                    style={{
-                                        background: 'rgba(30, 41, 59, 0.5)'
-                                    }}
-                                    onFocus={(e) => {
-                                        e.target.style.boxShadow = '0 0 0 0.2rem rgba(139, 92, 246, 0.25)';
-                                    }}
-                                    onBlur={(e) => {
-                                        e.target.style.boxShadow = 'none';
-                                    }}
-                                />
-                            </div>
+                                    {splitType === 'percentage' && (
+                                        <div style={{ color: getTotalPercentage() === 100 ? 'var(--color-success)' : 'var(--color-danger)' }}>
+                                            Total: {getTotalPercentage().toFixed(1)}% / 100%
+                                        </div>
+                                    )}
+                                    {splitType === 'custom' && formData.amount && (
+                                        <div style={{ color: Math.abs(getTotalCustomAmount() - parseFloat(formData.amount)) < 0.01 ? 'var(--color-success)' : 'var(--color-danger)' }}>
+                                            Total: ₹{getTotalCustomAmount().toFixed(2)} / ₹{parseFloat(formData.amount).toFixed(2)}
+                                        </div>
+                                    )}
+                                    {splitType === 'equal' && formData.amount && (
+                                        <div style={{ color: 'var(--color-success)' }}>
+                                            ₹{(parseFloat(formData.amount) / selectedMembers.length).toFixed(2)} per person
+                                        </div>
+                                    )}
+                                </div>
+                            )}
                         </div>
+                    </div>
 
-                        {/* Submit Button */}
+                    <div className="modal-footer">
+                        <button
+                            type="button"
+                            onClick={onClose}
+                            className="btn btn-secondary"
+                            disabled={loading}
+                        >
+                            Cancel
+                        </button>
                         <button
                             type="submit"
-                            className="btn w-100 text-white fw-semibold d-flex align-items-center justify-content-center gap-2"
+                            className="btn btn-primary"
                             disabled={loading}
-                            style={{
-                                background: 'linear-gradient(135deg, #8b5cf6, #ec4899)',
-                                border: 'none',
-                                padding: '0.6rem',
-                                marginTop: '0.5rem',
-                                boxShadow: '0 4px 12px rgba(139, 92, 246, 0.3)'
-                            }}
-                            onMouseEnter={(e) => {
-                                if (!loading) {
-                                    e.target.style.transform = 'translateY(-1px)';
-                                    e.target.style.boxShadow = '0 6px 16px rgba(139, 92, 246, 0.4)';
-                                }
-                            }}
-                            onMouseLeave={(e) => {
-                                e.target.style.transform = 'translateY(0)';
-                                e.target.style.boxShadow = '0 4px 12px rgba(139, 92, 246, 0.3)';
-                            }}
                         >
-                            {loading ? (
-                                <>
-                                    <div className="spinner-border spinner-border-sm" role="status">
-                                        <span className="visually-hidden">Loading...</span>
-                                    </div>
-                                    <span>Adding...</span>
-                                </>
-                            ) : (
-                                'Add Expense'
-                            )}
+                            {loading ? 'Adding...' : 'Add Expense'}
                         </button>
-                    </form>
-                </div>
+                    </div>
+                </form>
             </div>
         </div>
     );

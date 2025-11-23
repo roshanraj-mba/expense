@@ -1,55 +1,43 @@
 import React, { useState, useEffect, useMemo } from 'react';
-import { subscribeToExpenses } from '../firebaseService';
+import { subscribeToExpenses, calculateBalances } from '../firebaseService';
 import ExpenseList from './ExpenseList';
 import AddExpense from './AddExpense';
-import { Plus, Wallet, Droplets, Zap, Utensils, Home, PieChart, UserCircle } from 'lucide-react';
+import { Plus, Wallet, Droplets, Zap, Utensils, Home, PieChart, UserCircle, Users } from 'lucide-react';
 
-const Dashboard = ({ user, currentMonth }) => {
+const Dashboard = ({ user, currentMonth, group }) => {
     const [expenses, setExpenses] = useState([]);
     const [isAddModalOpen, setIsAddModalOpen] = useState(false);
     const [loading, setLoading] = useState(true);
 
     useEffect(() => {
+        if (!group) {
+            setExpenses([]);
+            setLoading(false);
+            return;
+        }
+
         setLoading(true);
-        const unsubscribe = subscribeToExpenses(currentMonth, (data) => {
+        const unsubscribe = subscribeToExpenses(group.id, currentMonth, (data) => {
             setExpenses(data);
             setLoading(false);
         });
         return () => unsubscribe();
-    }, [currentMonth]);
+    }, [group, currentMonth]);
 
     const stats = useMemo(() => {
+        if (!group) return { total: 0, byCategory: {}, balances: {} };
+
         const total = expenses.reduce((acc, curr) => acc + curr.amount, 0);
-        const perPerson = total / 4; // Fixed 4 people as per requirement
 
         const byCategory = expenses.reduce((acc, curr) => {
             acc[curr.category] = (acc[curr.category] || 0) + curr.amount;
             return acc;
         }, {});
 
-        const byUser = expenses.reduce((acc, curr) => {
-            if (!acc[curr.userId]) {
-                acc[curr.userId] = {
-                    name: curr.userName,
-                    paid: 0,
-                    id: curr.userId
-                };
-            }
-            acc[curr.userId].paid += curr.amount;
-            return acc;
-        }, {});
+        const balances = calculateBalances(expenses, group.members);
 
-        // Add current user if not present
-        if (!byUser[user.uid]) {
-            byUser[user.uid] = {
-                name: user.displayName || 'You',
-                paid: 0,
-                id: user.uid
-            };
-        }
-
-        return { total, perPerson, byCategory, byUser };
-    }, [expenses, user]);
+        return { total, byCategory, balances };
+    }, [expenses, group]);
 
     const getCategoryIcon = (cat) => {
         const iconProps = { size: 18 };
@@ -61,6 +49,23 @@ const Dashboard = ({ user, currentMonth }) => {
             default: return <Wallet {...iconProps} style={{ color: '#94a3b8' }} />;
         }
     };
+
+    if (!group) {
+        return (
+            <div className="empty-state" style={{ marginTop: '4rem' }}>
+                <div className="empty-state-icon">
+                    <Users size={64} />
+                </div>
+                <h3>No Group Selected</h3>
+                <p style={{ marginTop: '0.5rem' }}>
+                    Select a group from the header or create a new one to get started
+                </p>
+            </div>
+        );
+    }
+
+    const memberCount = Object.keys(group.members).length;
+    const myBalance = stats.balances[user.uid];
 
     return (
         <div className="container-fluid px-3 pb-5">
@@ -78,7 +83,7 @@ const Dashboard = ({ user, currentMonth }) => {
                         <div className="card-body p-3 position-relative">
                             <small className="text-white-50 d-block mb-1">Total Expenses</small>
                             <h3 className="mb-1 fw-bold text-white">₹{stats.total.toFixed(0)}</h3>
-                            <small className="text-white-50">For {Object.keys(stats.byUser).length} active members</small>
+                            <small className="text-white-50">For {memberCount} members</small>
                         </div>
                     </div>
                 </div>
@@ -93,9 +98,11 @@ const Dashboard = ({ user, currentMonth }) => {
                             <PieChart size={60} />
                         </div>
                         <div className="card-body p-3 position-relative">
-                            <small className="text-white-50 d-block mb-1">Your Share</small>
-                            <h3 className="mb-1 fw-bold" style={{ color: '#8b5cf6' }}>₹{stats.perPerson.toFixed(0)}</h3>
-                            <small className="text-white-50">Total / 4 People</small>
+                            <small className="text-white-50 d-block mb-1">You Owe</small>
+                            <h3 className="mb-1 fw-bold" style={{ color: '#ec4899' }}>
+                                ₹{myBalance ? myBalance.owes.toFixed(0) : '0'}
+                            </h3>
+                            <small className="text-white-50">Your share of expenses</small>
                         </div>
                     </div>
                 </div>
@@ -111,20 +118,16 @@ const Dashboard = ({ user, currentMonth }) => {
                         </div>
                         <div className="card-body p-3 position-relative">
                             <small className="text-white-50 d-block mb-1">Your Balance</small>
-                            {(() => {
-                                const myPaid = stats.byUser[user.uid]?.paid || 0;
-                                const balance = myPaid - stats.perPerson;
-                                return (
-                                    <>
-                                        <h3 className={`mb-1 fw-bold ${balance >= 0 ? 'text-success' : 'text-danger'}`}>
-                                            {balance >= 0 ? '+' : ''}₹{balance.toFixed(0)}
-                                        </h3>
-                                        <small className="text-white-50">
-                                            {balance >= 0 ? 'You are owed' : 'You owe'}
-                                        </small>
-                                    </>
-                                );
-                            })()}
+                            {myBalance && (
+                                <>
+                                    <h3 className={`mb-1 fw-bold ${myBalance.balance >= 0 ? 'text-success' : 'text-danger'}`}>
+                                        {myBalance.balance >= 0 ? '+' : ''}₹{myBalance.balance.toFixed(0)}
+                                    </h3>
+                                    <small className="text-white-50">
+                                        {myBalance.balance >= 0 ? 'You are owed' : 'You owe'}
+                                    </small>
+                                </>
+                            )}
                         </div>
                     </div>
                 </div>
@@ -181,7 +184,7 @@ const Dashboard = ({ user, currentMonth }) => {
                             </div>
                         </div>
                     ) : (
-                        <ExpenseList expenses={expenses} currentUserId={user.uid} />
+                        <ExpenseList expenses={expenses} currentUserId={user.uid} groupMembers={group.members} />
                     )}
                 </div>
 
@@ -194,39 +197,33 @@ const Dashboard = ({ user, currentMonth }) => {
                         borderRadius: '12px'
                     }}>
                         <div className="card-body p-2">
-                            {Object.values(stats.byUser).map(u => {
-                                const balance = u.paid - stats.perPerson;
-                                return (
-                                    <div key={u.id} className="d-flex align-items-center justify-content-between p-2 mb-2 rounded-2" style={{
-                                        background: 'rgba(15, 23, 42, 0.5)'
-                                    }}>
-                                        <div className="d-flex align-items-center gap-2">
-                                            <div className="rounded-circle d-flex align-items-center justify-content-center fw-bold" style={{
-                                                width: '32px',
-                                                height: '32px',
-                                                background: 'linear-gradient(135deg, #4b5563, #374151)',
-                                                fontSize: '0.75rem'
-                                            }}>
-                                                {u.name.charAt(0).toUpperCase()}
-                                            </div>
-                                            <div>
-                                                <div className="fw-medium text-white" style={{ fontSize: '0.85rem' }}>{u.name}</div>
-                                                <small className="text-white-50" style={{ fontSize: '0.7rem' }}>Paid: ₹{u.paid.toFixed(0)}</small>
-                                            </div>
+                            {Object.entries(stats.balances).map(([memberId, balance]) => (
+                                <div key={memberId} className="d-flex align-items-center justify-content-between p-2 mb-2 rounded-2" style={{
+                                    background: 'rgba(15, 23, 42, 0.5)'
+                                }}>
+                                    <div className="d-flex align-items-center gap-2">
+                                        <div className="rounded-circle d-flex align-items-center justify-content-center fw-bold" style={{
+                                            width: '32px',
+                                            height: '32px',
+                                            background: 'linear-gradient(135deg, #4b5563, #374151)',
+                                            fontSize: '0.75rem'
+                                        }}>
+                                            {balance.name.charAt(0).toUpperCase()}
                                         </div>
-                                        <div className={`text-end ${balance >= 0 ? 'text-success' : 'text-danger'}`}>
-                                            <div className="fw-bold" style={{ fontSize: '0.85rem' }}>{balance >= 0 ? '+' : ''}₹{balance.toFixed(0)}</div>
-                                            <small style={{ fontSize: '0.7rem', opacity: 0.8 }}>{balance >= 0 ? 'Gets back' : 'Owes'}</small>
+                                        <div>
+                                            <div className="fw-medium text-white" style={{ fontSize: '0.85rem' }}>
+                                                {balance.name}
+                                                {memberId === user.uid && <span style={{ color: 'var(--color-primary)', marginLeft: '0.25rem' }}>(You)</span>}
+                                            </div>
+                                            <small className="text-white-50" style={{ fontSize: '0.7rem' }}>Paid: ₹{balance.paid.toFixed(0)}</small>
                                         </div>
                                     </div>
-                                );
-                            })}
-
-                            <div className="pt-2 mt-2" style={{ borderTop: '1px solid rgba(255, 255, 255, 0.1)' }}>
-                                <small className="text-center text-white-50 d-block" style={{ fontSize: '0.7rem' }}>
-                                    *Calculated based on 4 people split (₹{stats.perPerson.toFixed(0)}/person)
-                                </small>
-                            </div>
+                                    <div className={`text-end ${balance.balance >= 0 ? 'text-success' : 'text-danger'}`}>
+                                        <div className="fw-bold" style={{ fontSize: '0.85rem' }}>{balance.balance >= 0 ? '+' : ''}₹{balance.balance.toFixed(0)}</div>
+                                        <small style={{ fontSize: '0.7rem', opacity: 0.8 }}>{balance.balance >= 0 ? 'Gets back' : 'Owes'}</small>
+                                    </div>
+                                </div>
+                            ))}
                         </div>
                     </div>
                 </div>
@@ -237,6 +234,7 @@ const Dashboard = ({ user, currentMonth }) => {
                 onClose={() => setIsAddModalOpen(false)}
                 user={user}
                 currentMonth={currentMonth}
+                group={group}
             />
         </div>
     );
